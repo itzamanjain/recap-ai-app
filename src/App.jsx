@@ -1,69 +1,132 @@
-import { useEffect, useState } from "react";
+import { useState, useEffect } from 'react';
+import './App.css';
 
 function App() {
-    const [devices, setDevices] = useState([]);
-    const [selectedMic, setSelectedMic] = useState("Microphone Array (Realtek(R) Audio)");
-    const [selectedSpeaker, setSelectedSpeaker] = useState("Microphone Array (Realtek(R) Audio)");
+  const [audioDevices, setAudioDevices] = useState({ microphones: [], speakers: [] });
+  const [selectedMic, setSelectedMic] = useState('');
+  const [selectedSpeaker, setSelectedSpeaker] = useState('');
+  const [isRecording, setIsRecording] = useState(false);
 
     useEffect(() => {
-        if (window.electron && window.electron.getAudioDevices) {
-            window.electron.getAudioDevices()
-                .then((deviceList) => {
-                    console.log("Fetched Devices: ✨✨✨✨", deviceList); // Debugging
-                    // console.log();
-                    
-
-                    // Assuming deviceList contains objects with { deviceId, label }
-                    setDevices(deviceList.map((device, index) => ({ deviceId: device, label: device })));
-
-                    
-                    if (deviceList.length >= 2) {
-                      setSelectedSpeaker(deviceList[0]); // ✅ Use the string directly
-                      setSelectedMic(deviceList[1]);
-                  }
-                })
-                .catch((err) => console.error("Error fetching audio devices:", err));
-        } else {
-            console.error("Electron API is not available!");
-        }
-    }, []);
-
-    const startRecording = () => {
-        if (!selectedMic || !selectedSpeaker) {
-            alert("Please select both a microphone and a speaker.");
+    async function fetchDevices() {
+    try {
+      if (!window.electron || !window.electron.getAudioDevices) {
+        console.error("Electron API is not available!");
             return;
         }
 
-        window.electron.startRecording({
-            speaker: selectedSpeaker,
-            mic: selectedMic
-        });
+      const devices = await window.electron.getAudioDevices();
+        console.log('Available devices:', devices); // Debug log
+      setAudioDevices(devices);
+
+      // Set default selections if devices are available
+      if (devices.microphones.length > 0) {
+        setSelectedMic(devices.microphones[0]);
+      }
+      if (devices.speakers.length > 0) {
+        setSelectedSpeaker(devices.speakers[0]);
+      }
+    } catch (error) {
+        console.error('Error fetching audio devices:', error);
+    }
+    }
+    
+    fetchDevices();
+  }, []);
+
+  const handleStartRecording = () => {
+    if (!selectedMic || !selectedSpeaker) {
+      alert("Please select both microphone and speaker");
+      return;
+    }
+
+    try {
+      setIsRecording(true);
+      window.electron.startRecording({
+        mic: selectedMic,
+        speaker: selectedSpeaker
+      });
+    } catch (error) {
+      console.error("Failed to start recording:", error);
+      setIsRecording(false);
+      alert("Failed to start recording. Please try again.");
+    }
+  };
+
+  useEffect(() => {
+    // Set up recording event handlers
+    const handleRecordingDone = (path) => {
+      setIsRecording(false);
+      alert(`Recording saved to: ${path}`);
     };
 
-    return (
-        <div>
-            <h1>Meeting Recorder</h1>
+    const handleRecordingError = (error) => {
+      console.error("Recording error:", error);
+      setIsRecording(false);
+      alert(`Recording failed: ${error}`);
+    };
 
-            <label>Speaker: </label>
-            <select value={selectedSpeaker} onChange={(e) => setSelectedSpeaker(e.target.value)}>
-                {devices.map((device) => (
-                    <option key={device.deviceId} value={device.deviceId}>
-                        {device.label || "Unknown Device"}
-                    </option>
-                ))}
+    window.electron.onRecordingDone(handleRecordingDone);
+    window.electron.onRecordingError(handleRecordingError);
+  }, []);
+
+  return (
+    <div className="container">
+      <h1>Audio Recorder</h1>
+
+      <div className="device-selection">
+        <div className="select-group">
+          <label htmlFor="micSelect">Microphone:</label>
+          <select
+            id="micSelect"
+            value={selectedMic}
+            onChange={(e) => setSelectedMic(e.target.value)}
+          >
+            <option value="">Select Microphone</option>
+            {audioDevices.microphones.map((mic, index) => (
+              <option key={index} value={mic}>
+                {mic}
+              </option>
+            ))}
             </select>
-
-            <label>Microphone: </label>
-            <select value={selectedMic} onChange={(e) => setSelectedMic(e.target.value)}>
-                {devices.map((device) => (
-                    <option key={device.deviceId} value={device.deviceId}>
-                        {device.label || "Unknown Device"}
-                    </option>
-                ))}
-            </select>
-
-            <button onClick={startRecording}>Start Recording</button>
         </div>
+
+        <div className="select-group">
+          <label htmlFor="speakerSelect">Speaker:</label>
+          <select
+            id="speakerSelect"
+            value={selectedSpeaker}
+            onChange={(e) => setSelectedSpeaker(e.target.value)}
+          >
+            <option value="">Select Speaker</option>
+            {audioDevices.speakers.map((speaker, index) => (
+              <option key={index} value={speaker}>
+                {speaker}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className="controls">
+        {!isRecording ? (
+          <button
+            onClick={handleStartRecording}
+            disabled={!selectedMic || !selectedSpeaker}
+            className="start-button"
+          >
+            Start Recording
+          </button>
+        ) : (
+          <button
+            onClick={handleStopRecording}
+            className="stop-button"
+          >
+            Stop Recording
+          </button>
+        )}
+      </div>
+    </div>
     );
 }
 

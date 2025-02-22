@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
 const { spawn } = require("child_process");
-const ffmpeg = require("ffmpeg-static"); // ✅ Use ffmpeg-static
+const ffmpeg = require("ffmpeg-static");
 
 let mainWindow;
 
@@ -10,69 +10,159 @@ app.whenReady().then(() => {
         width: 1000,
         height: 600,
         webPreferences: {
-            nodeIntegration: false, // Security best practice
-            contextIsolation: true, // ✅ Enables `contextBridge`
-            preload: path.join(__dirname, "preload.js"), // ✅ Ensure correct path
+            nodeIntegration: false,
+            contextIsolation: true,
+            preload: path.join(__dirname, "preload.js"),
         },
     });
 
-    mainWindow.loadURL("http://localhost:5173"); // Adjust based on your React setup
+    mainWindow.loadURL("http://localhost:5173");
 
     mainWindow.on("closed", () => {
         mainWindow = null;
     });
 });
 
-// Ensure app closes completely when all windows are closed
 app.on("window-all-closed", () => {
     if (process.platform !== "darwin") {
         app.quit();
     }
 });
 
-// 🔹 Function to auto-detect available audio devices
 function getAudioDevices(callback) {
-    const ffmpegProcess = spawn(ffmpeg, ["-list_devices", "true", "-f", "dshow", "-i", "dummy"]);
+    // Check if we're on Windows, as dshow is Windows-specific
+    if (process.platform !== 'win32') {
+        console.error("❌ This feature is currently only supported on Windows");
+        callback({ microphones: [], speakers: [] });
+        return;
+    }
+
+    const ffmpegProcess = spawn(ffmpeg, [
+        "-list_devices", "true",
+        "-f", "dshow",
+        "-i", "dummy"
+    ]);
 
     let output = "";
+    let devices = {
+        microphones: [],
+        speakers: []
+    };
+    let isAudioSection = false;
+
     ffmpegProcess.stderr.on("data", (data) => {
-        output += data.toString();
+        const chunk = data.toString();
+        output += chunk;
+        console.log("Raw FFmpeg output chunk:", chunk); // Debug raw output
+        
+        // Process the output line by line
+        const lines = chunk.split('\n');
+        lines.forEach(line => {
+            // Debug each line
+            if (line.trim()) {
+                console.log("Processing line:", line);
+            }
+
+            // Mark when we enter the audio devices section
+            if (line.includes("DirectShow audio devices")) {
+                console.log("🎤 ***** FOUND AUDIO DEVICES SECTION *****");
+                isAudioSection = true;
+            }
+
+            // Only process lines when we're in the audio section
+            if (isAudioSection) {
+                // Look for alternative device indicators
+                if (line.includes('"')) {
+                    console.log("Found potential device line:", line);
+                    
+                    // Try to extract device name between quotes
+                    const nameMatch = line.match(/"([^"]+)"/);
+                    if (nameMatch) {
+                        const deviceName = nameMatch[1];
+                        console.log("Extracted device name:", deviceName);
+
+                        // Determine if it's an input or output device
+                        const lineLC = line.toLowerCase();
+                        const isInput = lineLC.includes("input") || 
+                                      lineLC.includes("microphone") || 
+                                      lineLC.includes("mic") ||
+                                      lineLC.includes("audio input");
+                        
+                        const isOutput = lineLC.includes("output") || 
+                                       lineLC.includes("speaker") || 
+                                       lineLC.includes("playback") ||
+                                       lineLC.includes("audio output");
+
+                        if (isInput && !devices.microphones.includes(deviceName)) {
+                            console.log(`Found microphone: ${deviceName}`);
+                            devices.microphones.push(deviceName);
+                        } else if (isOutput && !devices.speakers.includes(deviceName)) {
+                            console.log(`Found speaker: ${deviceName}`);
+                            devices.speakers.push(deviceName);
+                        } else {
+                            console.log(`Device type unclear - Line indicators: Input=${isInput}, Output=${isOutput}`);
+                        }
+                    }
+                }
+            }
+        });
     });
 
-    ffmpegProcess.on("close", () => {
-        const deviceList = [];
-        const deviceRegex = /\[dshow\]  "(.*?)"/g;
-        let match;
+    ffmpegProcess.on("close", (code) => {
+        console.log(`\n⭐⭐⭐ AUDIO DEVICES DETECTED (Exit code: ${code}) ⭐⭐⭐`);
+        console.log("\n🎤 Microphones:", devices.microphones.length);
+        devices.microphones.forEach(mic => console.log(`   * ${mic}`));
+        console.log("\n🔊 Speakers:", devices.speakers.length);
+        devices.speakers.forEach(speaker => console.log(`   * ${speaker}`));
+        console.log("\n⭐⭐⭐ END OF DEVICE LIST ⭐⭐⭐\n");
 
-        while ((match = deviceRegex.exec(output)) !== null) {
-            deviceList.push(match[1]);
-        }
-        console.log("device lsit ✨✨✨✨✨✨",deviceList);
-        
-        if (deviceList.length === 0) {
-            console.log("No audio ✨✨✨✨✨ devices detected. Full FFmpeg output:", output);  // Add this to debug
+        if (devices.microphones.length === 0 && devices.speakers.length === 0) {
+            console.log("❌ No audio devices detected!");
+            console.log("Complete FFmpeg output:", output);
         }
 
-        callback(deviceList);
+        callback(devices);
     });
 
     ffmpegProcess.on("error", (err) => {
-        console.error("FFmpeg Process Error:", err);
-        callback([]);  // Return an empty array if there is an error
+        console.error("⚠️ FFmpeg Process Error:", err);
+        console.error(err.stack);
+        callback({ microphones: [], speakers: [] });
     });
+
+    // Set a timeout in case FFmpeg hangs
+    setTimeout(() => {
+        try {
+            ffmpegProcess.kill();
+            console.error("⚠️ FFmpeg process timed out");
+            callback({ microphones: [], speakers: [] });
+        } catch (err) {
+            console.error("Error killing FFmpeg process:", err);
+        }
+    }, 10000); // 10 second timeout
 }
 
-
-// 🔹 IPC event to send audio device list to frontend
 ipcMain.handle("get-audio-devices", async () => {
     return new Promise((resolve) => {
         getAudioDevices(resolve);
     });
 });
 
-// 🔹 Start Recording with Auto-Selected Devices
 ipcMain.on("start-recording", (event, { speaker, mic }) => {
+    if (!speaker || !mic) {
+        event.reply("recording-error", "Invalid device selection");
+        return;
+    }
+
+    // Check if we're on Windows
+    if (process.platform !== 'win32') {
+        event.reply("recording-error", "Recording is only supported on Windows");
+        return;
+    }
+
     const outputPath = path.join(app.getPath("desktop"), "meeting-recording.mp3");
+    console.log(`Starting recording with mic: ${mic} and speaker: ${speaker}`);
+    console.log(`Output path: ${outputPath}`);
 
     const ffmpegProcess = spawn(ffmpeg, [
         "-f", "dshow",
@@ -87,16 +177,41 @@ ipcMain.on("start-recording", (event, { speaker, mic }) => {
     ]);
 
     ffmpegProcess.stderr.on("data", (data) => {
-        console.log(`FFmpeg Error: ${data}`);
+        const message = data.toString();
+        console.log(`FFmpeg Output: ${message}`);
+        
+        // Check for common errors
+        if (message.includes("Could not open audio device") ||
+            message.includes("Device not found") ||
+            message.includes("Error opening input")) {
+            ffmpegProcess.kill();
+            event.reply("recording-error", "Failed to access audio devices. Please check your device selection.");
+        }
     });
 
-    ffmpegProcess.on("close", () => {
-        event.reply("recording-done", outputPath);
+    ffmpegProcess.on("close", (code) => {
+        if (code === 0) {
+            console.log("Recording completed successfully");
+            event.reply("recording-done", outputPath);
+        } else {
+            console.error(`Recording process exited with code ${code}`);
+            event.reply("recording-error", `Recording failed with exit code ${code}`);
+        }
     });
 
     ffmpegProcess.on("error", (err) => {
         console.error("Recording Process Error:", err);
-        event.reply("recording-error", "Recording failed.");
+        console.error(err.stack);
+        event.reply("recording-error", "Recording failed due to an internal error.");
     });
-});
 
+    // Set a timeout in case FFmpeg hangs
+    setTimeout(() => {
+        try {
+            ffmpegProcess.kill();
+            event.reply("recording-error", "Recording timed out");
+        } catch (err) {
+            console.error("Error killing FFmpeg process:", err);
+        }
+    }, 3600000); // 1 hour timeout for recording
+});
